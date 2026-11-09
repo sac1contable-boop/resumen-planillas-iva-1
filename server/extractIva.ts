@@ -347,6 +347,9 @@ function extractAmountsFromWindow(
   return amounts;
 }
 
+// Blacklisted form codes & serial numbers that must NEVER be assigned to tax casillas
+const BLACKLISTED_FORM_NUMBERS = [99030, 2600524809];
+
 // Targeted Casilla amount extractor for SENIAT forms
 export function extractCasillaAmount(cleanText: string, casillaCode: number): number | null {
   const patterns = [
@@ -358,25 +361,27 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
     new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
     // 40: 2.513.414,61 (at start of line)
     new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "im"),
-    // Across newlines or table cells: [ 40 ] ... 2.513.414,61
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s\\S]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-    // Across newlines or table cells: ( 40 ) ... 2.513.414,61
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s\\S]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
+    // Restrict cross-matching to same line
+    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
+    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
   ];
 
   for (const pattern of patterns) {
     const match = cleanText.match(pattern);
     if (match && match[1]) {
-      const parsed = parseVenAmount(match[1]);
-      // Discard if parsed value equals the casilla code itself (e.g. [47] 47)
+      const rawMatchStr = match[1].trim();
+      const parsed = parseVenAmount(rawMatchStr);
+
       if (parsed === casillaCode) continue;
-      // Discard common row indices: 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21, 22, 27, 28, 29, 30, 31, 32
+      if (BLACKLISTED_FORM_NUMBERS.includes(parsed)) continue;
+      if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
+
       const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
-      if (isKnownRowIndex && !match[1].includes(",") && !match[1].includes(".")) {
+      if (isKnownRowIndex && !rawMatchStr.includes(",") && !rawMatchStr.includes(".")) {
         continue;
       }
-      // Special strict discards
-      if (casillaCode === 47 && parsed === 10) continue;
+      if (casillaCode === 47 && (parsed === 10 || parsed === 99030)) continue;
+      if (casillaCode === 42 && (parsed === 99030)) continue;
       if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14)) continue;
       if (casillaCode === 30 && (parsed === 11 || parsed === 10)) continue;
       if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19)) continue;
@@ -733,7 +738,7 @@ export function parseSeniatText(rawText: string, fileName: string): Partial<Extr
 function sanitizeItemCodeContamination(data: Partial<ExtractedIvaData>): void {
   const checkAndClean = (key: keyof ExtractedIvaData, excluded: number[]) => {
     const val = Number(data[key]);
-    if (excluded.includes(val)) {
+    if (excluded.includes(val) || val === 99030 || val === 2600524809 || val > 500000000) {
       (data as any)[key] = 0;
     }
   };

@@ -45,6 +45,9 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   return isNegative ? -Math.abs(rounded) : rounded;
 }
 
+// Blacklisted form codes & serial numbers that must NEVER be assigned to tax casillas
+const BLACKLISTED_FORM_NUMBERS = [99030, 2600524809];
+
 // Targeted Casilla amount extractor for SENIAT forms
 export function extractCasillaAmount(cleanText: string, casillaCode: number): number | null {
   const patterns = [
@@ -52,20 +55,27 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
     new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
     new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
     new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'im'),
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s\\S]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s\\S]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    // Restrict cross-matching to the same line to avoid grabbing numbers from headers
+    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
   ];
 
   for (const pattern of patterns) {
     const match = cleanText.match(pattern);
     if (match && match[1]) {
-      const parsed = parseVenAmount(match[1]);
+      const rawMatchStr = match[1].trim();
+      const parsed = parseVenAmount(rawMatchStr);
+
       if (parsed === casillaCode) continue;
+      if (BLACKLISTED_FORM_NUMBERS.includes(parsed)) continue;
+      if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
+
       const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
-      if (isKnownRowIndex && !match[1].includes(',') && !match[1].includes('.')) {
+      if (isKnownRowIndex && !rawMatchStr.includes(',') && !rawMatchStr.includes('.')) {
         continue;
       }
-      if (casillaCode === 47 && parsed === 10) continue;
+      if (casillaCode === 47 && (parsed === 10 || parsed === 99030)) continue;
+      if (casillaCode === 42 && (parsed === 99030)) continue;
       if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14)) continue;
       if (casillaCode === 30 && (parsed === 11 || parsed === 10)) continue;
       if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19)) continue;
@@ -99,6 +109,7 @@ function extractAmountsFromWindow(text: string, excludedNumbers: number[] = []):
   for (const m of matches) {
     const parsed = parseVenAmount(m);
     if (excludedNumbers.includes(parsed)) continue;
+    if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
     if (!m.includes(',') && !m.includes('.') && (commonItemCodes.includes(parsed) || parsed < 100)) continue;
     if (parsed === 10 || parsed === 15) {
       if (!m.includes(',00') && !m.includes('.00')) continue;
@@ -109,7 +120,7 @@ function extractAmountsFromWindow(text: string, excludedNumbers: number[] = []):
   return amounts;
 }
 
-// Extract raw text from PDF directly in browser
+// Extract raw text from PDF directly in browser with spatial Y-coordinate sorting
 export async function extractTextFromPdfInBrowser(file: File): Promise<string> {
   const arrayBuffer = await file.arrayBuffer();
 
@@ -126,10 +137,44 @@ export async function extractTextFromPdfInBrowser(file: File): Promise<string> {
     for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
       const page = await pdfDoc.getPage(pageNum);
       const textContent = await page.getTextContent();
-      const pageText = textContent.items
-        .map((item: any) => ('str' in item ? item.str : ''))
-        .join(' ');
-      fullText += `\n--- Page ${pageNum} ---\n` + pageText;
+      
+      const items: { str: string; x: number; y: number }[] = [];
+      for (const item of textContent.items as any[]) {
+        if ('str' in item && typeof item.str === 'string' && item.str.trim().length > 0) {
+          const transform = item.transform || [1, 0, 0, 1, 0, 0];
+          const x = transform[4] || 0;
+          const y = transform[5] || 0;
+          items.push({ str: item.str, x, y });
+        }
+      }
+
+      // Sort items: Top to Bottom (Y descending), Left to Right (X ascending)
+      items.sort((a, b) => {
+        if (Math.abs(a.y - b.y) > 5) {
+          return b.y - a.y;
+        }
+        return a.x - b.x;
+      });
+
+      // Group into lines by Y coordinate
+      const pageLines: string[] = [];
+      let currentLineItems: string[] = [];
+      let lastY: number | null = null;
+
+      for (const item of items) {
+        if (lastY === null || Math.abs(item.y - lastY) <= 5) {
+          currentLineItems.push(item.str);
+        } else {
+          pageLines.push(currentLineItems.join(' '));
+          currentLineItems = [item.str];
+        }
+        lastY = item.y;
+      }
+      if (currentLineItems.length > 0) {
+        pageLines.push(currentLineItems.join(' '));
+      }
+
+      fullText += `\n--- Page ${pageNum} ---\n` + pageLines.join('\n');
     }
 
     if (fullText.trim().length > 20) {
@@ -334,6 +379,13 @@ export function parseSeniatForma30(
     }
   }
 
+  // Anti-contamination sanitizer: zero out any values matching form numbers or serial numbers
+  const sanitizeValue = (val: number, itemCode: number): number => {
+    if (val === 99030 || val === 2600524809 || val > 500000000) return 0;
+    if (val === itemCode) return 0;
+    return val;
+  };
+
   return {
     razonSocial: razonSocial || 'EMPRESA CONTRIBUYENTE',
     rif: rif || 'J-00000000-0',
@@ -346,33 +398,33 @@ export function parseSeniatForma30(
     numeroCertificado,
     fechaDeclaracion,
     fileName,
-    item40,
-    item41,
-    item42,
-    item43,
-    item442,
-    item443,
+    item40: sanitizeValue(item40, 40),
+    item41: sanitizeValue(item41, 41),
+    item42: sanitizeValue(item42, 42),
+    item43: sanitizeValue(item43, 43),
+    item442: sanitizeValue(item442, 442),
+    item443: sanitizeValue(item443, 443),
     ingresoIntereses: 0,
-    item47,
-    item30,
-    item31,
-    item33,
-    item34,
-    item333,
-    item343,
-    item35,
-    item70,
-    item37,
-    item71,
-    item20,
-    item38,
-    item39: totalCreditos,
-    item53,
-    item60,
-    item54,
-    item66,
-    item67,
-    item90,
+    item47: sanitizeValue(item47, 47),
+    item30: sanitizeValue(item30, 30),
+    item31: sanitizeValue(item31, 31),
+    item33: sanitizeValue(item33, 33),
+    item34: sanitizeValue(item34, 34),
+    item333: sanitizeValue(item333, 333),
+    item343: sanitizeValue(item343, 343),
+    item35: sanitizeValue(item35, 35),
+    item70: sanitizeValue(item70, 70),
+    item37: sanitizeValue(item37, 37),
+    item71: sanitizeValue(item71, 71),
+    item20: sanitizeValue(item20, 20),
+    item38: sanitizeValue(item38, 38),
+    item39: sanitizeValue(totalCreditos, 39),
+    item53: sanitizeValue(item53, 53),
+    item60: sanitizeValue(item60, 60),
+    item54: sanitizeValue(item54, 54),
+    item66: sanitizeValue(item66, 66),
+    item67: sanitizeValue(item67, 67),
+    item90: sanitizeValue(item90, 90),
     extractedAt: new Date().toISOString(),
   };
 }
