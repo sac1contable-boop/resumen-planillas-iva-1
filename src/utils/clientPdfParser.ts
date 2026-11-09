@@ -1,20 +1,14 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { ExtractionResult, IvaQuincenaData } from '../types';
 import { detectPeriodFromFilename } from './taxCalculations';
 
-// Set up pdfjs worker using self-hosted bundle for Netlify & static hosts
+// Set up pdfjs worker using Vite URL bundle for 100% reliable execution in browser
 if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-      'pdfjs-dist/build/pdf.worker.min.mjs',
-      import.meta.url
-    ).toString();
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
   } catch (e) {
-    try {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version || '4.10.38'}/build/pdf.worker.min.mjs`;
-    } catch (err) {
-      console.warn('Could not set pdfjs workerSrc:', err);
-    }
+    console.warn('Could not set pdfjs workerSrc:', e);
   }
 }
 
@@ -27,15 +21,19 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   if (!str) return 0;
 
   const isNegative = str.startsWith('-') || (str.startsWith('(') && str.endsWith(')'));
-  str = str.replace(/[Bs\.\$VES\s\(\)]/gi, '');
+  // Strip ONLY currency symbols and surrounding brackets/spaces — NEVER strip dots or commas from numeric figures!
+  str = str.replace(/(?:Bs\.?|VES|\$|\s|\(|\))/gi, '').trim();
 
   if (str.includes(',') && str.includes('.')) {
     if (str.lastIndexOf(',') > str.lastIndexOf('.')) {
+      // 1.234,56 -> 1234.56
       str = str.replace(/\./g, '').replace(',', '.');
     } else {
+      // 1,234.56 -> 1234.56
       str = str.replace(/,/g, '');
     }
   } else if (str.includes(',')) {
+    // 1234,56 -> 1234.56
     str = str.replace(',', '.');
   }
 
@@ -45,47 +43,83 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   return isNegative ? -Math.abs(rounded) : rounded;
 }
 
+// Normalize spacing in extracted PDF text so character position splits don't break regex matching
+export function normalizePdfText(text: string): string {
+  if (!text) return '';
+  let clean = text.replace(/\r\n/g, '\n');
+  // 1. Join split digits and punctuation: "99 . 030 , 00" -> "99.030,00"
+  clean = clean.replace(/(\d)\s*([\.,])\s*(\d)/g, '$1$2$3');
+  clean = clean.replace(/(\d)\s*([\.,])\s*(\d)/g, '$1$2$3');
+  // 2. Normalize brackets: "[ 40 ]" -> "[40]", "( 42 )" -> "(42)"
+  clean = clean.replace(/\[\s*(\d{1,3})\s*\]/g, '[$1]');
+  clean = clean.replace(/\(\s*(\d{1,3})\s*\)/g, '($1)');
+  clean = clean.replace(/[ \t]+/g, ' ');
+  return clean;
+}
+
 // Targeted Casilla amount extractor for SENIAT forms
 export function extractCasillaAmount(cleanText: string, casillaCode: number): number | null {
-  const patterns = [
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'im'),
-    // Restrict cross-matching to the same line to avoid grabbing numbers from headers
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,80}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,80}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-  ];
+  const normText = normalizePdfText(cleanText);
+  const lines = normText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 
-  for (const pattern of patterns) {
-    const match = cleanText.match(pattern);
-    if (match && match[1]) {
-      const rawMatchStr = match[1].trim();
-      const parsed = parseVenAmount(rawMatchStr);
+  const bracketTarget = `[${casillaCode}]`;
+  const parenTarget = `(${casillaCode})`;
 
-      if (parsed === casillaCode) continue;
+  // Strategy 1: Line-by-line targeted lookup
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hasBracket = line.includes(bracketTarget);
+    const hasParen = line.includes(parenTarget);
+    const hasBareCode = new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)?\\s*\\b${casillaCode}\\b`, 'i').test(line);
 
-      // Only filter form codes / serials if the match is a bare integer without decimal separator (no , or .)
-      if (!rawMatchStr.includes(',') && !rawMatchStr.includes('.')) {
-        if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) {
-          continue;
+    if (hasBracket || hasParen || hasBareCode) {
+      let codePos = -1;
+      if (hasBracket) codePos = line.indexOf(bracketTarget);
+      else if (hasParen) codePos = line.indexOf(parenTarget);
+      else codePos = line.search(new RegExp(`\\b${casillaCode}\\b`));
+
+      const afterCode = codePos !== -1 ? line.substring(codePos) : line;
+      // Match Venezuelan monetary numbers: 1.234.567,89 or 99.030,00 or 0,00 or 1234,56
+      const moneyMatches = afterCode.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+
+      if (moneyMatches && moneyMatches.length > 0) {
+        const val = parseVenAmount(moneyMatches[0]);
+        if (val !== casillaCode || moneyMatches[0].includes(',') || moneyMatches[0].includes('.')) {
+          return val;
         }
       }
 
-      const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
-      if (isKnownRowIndex && !rawMatchStr.includes(',') && !rawMatchStr.includes('.')) {
-        continue;
+      // Check next line if current line didn't have amount after code
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        const nextMoneyMatches = nextLine.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+        if (nextMoneyMatches && nextMoneyMatches.length > 0) {
+          const val = parseVenAmount(nextMoneyMatches[0]);
+          if (val !== casillaCode || nextMoneyMatches[0].includes(',') || nextMoneyMatches[0].includes('.')) {
+            return val;
+          }
+        }
       }
-
-      if (casillaCode === 47 && parsed === 10 && !rawMatchStr.includes(',')) continue;
-      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14) && !rawMatchStr.includes(',')) continue;
-      if (casillaCode === 30 && (parsed === 11 || parsed === 10) && !rawMatchStr.includes(',')) continue;
-      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19) && !rawMatchStr.includes(',')) continue;
-      if (casillaCode === 70 && (parsed === 20 || parsed === 17) && !rawMatchStr.includes(',')) continue;
-      if (casillaCode === 71 && (parsed === 22 || parsed === 21) && !rawMatchStr.includes(',')) continue;
-      return parsed;
     }
   }
+
+  // Strategy 2: Global pattern fallbacks
+  const patterns = [
+    new RegExp(`\\[${casillaCode}\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, 'i'),
+    new RegExp(`\\(${casillaCode}\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, 'i'),
+    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, 'i'),
+  ];
+
+  for (const pat of patterns) {
+    const match = normText.match(pat);
+    if (match && match[1]) {
+      const val = parseVenAmount(match[1]);
+      if (val !== casillaCode || match[1].includes(',') || match[1].includes('.')) {
+        return val;
+      }
+    }
+  }
+
   return null;
 }
 
@@ -111,7 +145,7 @@ function extractAmountsFromWindow(text: string, excludedNumbers: number[] = []):
   for (const m of matches) {
     const parsed = parseVenAmount(m);
     if (excludedNumbers.includes(parsed)) continue;
-    if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
+    if (parsed > 500000000) continue;
     if (!m.includes(',') && !m.includes('.') && (commonItemCodes.includes(parsed) || parsed < 100)) continue;
     if (parsed === 10 || parsed === 15) {
       if (!m.includes(',00') && !m.includes('.00')) continue;
@@ -142,7 +176,7 @@ export async function extractTextFromPdfInBrowser(file: File): Promise<string> {
       
       const items: { str: string; x: number; y: number }[] = [];
       for (const item of textContent.items as any[]) {
-        if ('str' in item && typeof item.str === 'string' && item.str.trim().length > 0) {
+        if ('str' in item && typeof item.str === 'string' && item.str.length > 0) {
           const transform = item.transform || [1, 0, 0, 1, 0, 0];
           const x = transform[4] || 0;
           const y = transform[5] || 0;
@@ -150,65 +184,51 @@ export async function extractTextFromPdfInBrowser(file: File): Promise<string> {
         }
       }
 
-      // Sort items: Top to Bottom (Y descending), Left to Right (X ascending)
-      items.sort((a, b) => {
-        if (Math.abs(a.y - b.y) > 5) {
-          return b.y - a.y;
-        }
-        return a.x - b.x;
-      });
-
-      // Group into lines by Y coordinate
-      const pageLines: string[] = [];
-      let currentLineItems: string[] = [];
-      let lastY: number | null = null;
-
+      // Group into Y line buckets (4pt height quantization for stable line grouping)
+      const lineMap = new Map<number, { str: string; x: number }[]>();
       for (const item of items) {
-        if (lastY === null || Math.abs(item.y - lastY) <= 5) {
-          currentLineItems.push(item.str);
-        } else {
-          pageLines.push(currentLineItems.join(' '));
-          currentLineItems = [item.str];
+        const lineKey = Math.round(item.y / 4) * 4;
+        if (!lineMap.has(lineKey)) {
+          lineMap.set(lineKey, []);
         }
-        lastY = item.y;
+        lineMap.get(lineKey)!.push({ str: item.str, x: item.x });
       }
-      if (currentLineItems.length > 0) {
-        pageLines.push(currentLineItems.join(' '));
+
+      // Sort Y lines descending (top to bottom of page)
+      const sortedY = Array.from(lineMap.keys()).sort((a, b) => b - a);
+      const pageLines: string[] = [];
+
+      for (const yKey of sortedY) {
+        const lineItems = lineMap.get(yKey)!;
+        // Sort items on the same line left to right (ascending X)
+        lineItems.sort((a, b) => a.x - b.x);
+        pageLines.push(lineItems.map((i) => i.str).join(' '));
       }
 
       fullText += `\n--- Page ${pageNum} ---\n` + pageLines.join('\n');
     }
 
-    if (fullText.trim().length > 20) {
+    if (fullText.trim().length > 10) {
       return fullText;
     }
   } catch (err) {
-    console.warn('pdfjs extraction error, attempting raw text fallback:', err);
+    console.warn('pdfjs extraction error:', err);
   }
 
-  // Fallback: simple text decoder looking for text blocks in the PDF buffer
+  // Fallback: Latin1 decoding of uncompressed PDF streams
   try {
     const textDecoder = new TextDecoder('latin1');
     const raw = textDecoder.decode(arrayBuffer);
-    
-    // Look for text streams
-    const streamMatches = raw.match(/stream[\r\n]+([\s\S]*?)endstream/g) || [];
-    let fallbackText = '';
-    for (const s of streamMatches) {
-      // Find strings inside parentheses (Text)
-      const parenTexts = s.match(/\(([^()]+)\)/g);
-      if (parenTexts) {
-        fallbackText += ' ' + parenTexts.map((p) => p.slice(1, -1)).join(' ');
-      }
+    const parenMatches = raw.match(/\(([^()]{2,100})\)/g) || [];
+    if (parenMatches.length > 0) {
+      const extractedStr = parenMatches.map((m) => m.slice(1, -1)).join(' ');
+      if (extractedStr.length > 20) return extractedStr;
     }
-    if (fallbackText.length > 50) {
-      return fallbackText;
-    }
-    return raw;
   } catch (err2) {
-    console.error('All PDF text extraction methods failed:', err2);
-    return '';
+    console.error('PDF text extraction fallback error:', err2);
   }
+
+  return '';
 }
 
 // SENIAT Forma 30 deterministic parser (Client-Side)
@@ -217,13 +237,13 @@ export function parseSeniatForma30(
   fileName: string,
   preferredPeriod?: { year?: number; month?: number; quincena?: 1 | 2 }
 ): NonNullable<ExtractionResult['data']> {
-  const cleanText = rawText.replace(/\r\n/g, '\n');
-  const lines = cleanText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+  const normText = normalizePdfText(rawText);
+  const lines = normText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
 
   // 1. RIF Extraction
   let rif = 'J-00000000-0';
-  const rifMatch = cleanText.match(/(?:RIF|R\.I\.F\.?|NÚMERO DE RIF|NUMERO DE RIF)[\s:]*([VJEGP]-?\d{7,9}-?\d?)/i) ||
-                   cleanText.match(/\b([VJEGP]-?\d{7,9}-?\d?)\b/i);
+  const rifMatch = normText.match(/(?:RIF|R\.I\.F\.?|NÚMERO DE RIF|NUMERO DE RIF)[\s:]*([VJEGP]-?\d{7,9}-?\d?)/i) ||
+                   normText.match(/\b([VJEGP]-?\d{7,9}-?\d?)\b/i);
   if (rifMatch) {
     let r = rifMatch[1].toUpperCase().replace(/\s+/g, '');
     if (!r.includes('-') && r.length >= 8) {
@@ -234,8 +254,8 @@ export function parseSeniatForma30(
 
   // 2. Razón Social Extraction
   let razonSocial = '';
-  const razonSocialMatch = cleanText.match(/(?:Razón Social|Nombre o Razón Social|Contribuyente|NOMBRE O RAZÓN SOCIAL|NOMBRE O RAZON SOCIAL)[\s:]+([^\n\r]+)/i) ||
-                           cleanText.match(/(?:APELLIDOS Y NOMBRES O RAZÓN SOCIAL)[\s:]+([^\n\r]+)/i);
+  const razonSocialMatch = normText.match(/(?:Razón Social|Nombre o Razón Social|Contribuyente|NOMBRE O RAZÓN SOCIAL|NOMBRE O RAZON SOCIAL)[\s:]+([^\n\r]+)/i) ||
+                           normText.match(/(?:APELLIDOS Y NOMBRES O RAZÓN SOCIAL)[\s:]+([^\n\r]+)/i);
   if (razonSocialMatch) {
     const rawName = razonSocialMatch[1].trim().replace(/^[:\-\s]+/, '').split(/\s{3,}|\t/)[0];
     if (rawName && rawName.length > 2) {
@@ -248,11 +268,11 @@ export function parseSeniatForma30(
   let fechaDesde = '';
   let fechaHasta = '';
 
-  const fechaDeclMatch = cleanText.match(/(?:Fecha de Declaración|FECHA DE DECLARACION|Fecha de Presentación|FECHA DE PRESENTACION|FECHA PRESENTACION|FECHA DECLARACIÓN)[\s:]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
+  const fechaDeclMatch = normText.match(/(?:Fecha de Declaración|FECHA DE DECLARACION|Fecha de Presentación|FECHA DE PRESENTACION|FECHA PRESENTACION|FECHA DECLARACIÓN)[\s:]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
   if (fechaDeclMatch) fechaDeclaracion = fechaDeclMatch[1];
 
-  const periodoMatch = cleanText.match(/(?:PERIODO|PERÍODO)\s*(?:IMPOSITIVO)?[\s\S]{0,120}?DESDE[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})[\s\S]{0,60}?HASTA[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
-  const rangeMatch = cleanText.match(/\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](202[0-9])\s*(?:AL|A|HASTA|-)\s*(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](202[0-9])\b/i);
+  const periodoMatch = normText.match(/(?:PERIODO|PERÍODO)\s*(?:IMPOSITIVO)?[\s\S]{0,120}?DESDE[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})[\s\S]{0,60}?HASTA[:\s]*(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})/i);
+  const rangeMatch = normText.match(/\b(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](202[0-9])\s*(?:AL|A|HASTA|-)\s*(0?[1-9]|[12][0-9]|3[01])[\/\-\.](0?[1-9]|1[0-2])[\/\-\.](202[0-9])\b/i);
 
   if (periodoMatch) {
     fechaDesde = periodoMatch[1];
@@ -286,41 +306,41 @@ export function parseSeniatForma30(
   // 5. Declaración & Certificado numbers
   let numeroDeclaracion = '';
   let numeroCertificado = '';
-  const declNumMatch = cleanText.match(/(?:Número de Declaración|NUMERO DE DECLARACION|N° de Declaración|Nro\. Declaración|Declaración No\.)[\s:]*([A-Z0-9\-]+)/i);
-  const certNumMatch = cleanText.match(/(?:Número de Certificado|NUMERO DE CERTIFICADO|N° Certificado|Certificado Electrónico No\.|Certificado No\.)[\s:]*([A-Z0-9\-]+)/i);
+  const declNumMatch = normText.match(/(?:Número de Declaración|NUMERO DE DECLARACION|N° de Declaración|Nro\. Declaración|Declaración No\.)[\s:]*([A-Z0-9\-]+)/i);
+  const certNumMatch = normText.match(/(?:Número de Certificado|NUMERO DE CERTIFICADO|N° Certificado|Certificado Electrónico No\.|Certificado No\.)[\s:]*([A-Z0-9\-]+)/i);
   if (declNumMatch) numeroDeclaracion = declNumMatch[1];
   if (certNumMatch) numeroCertificado = certNumMatch[1];
 
   // 6. Direct Casilla Extraction
-  const item40 = extractCasillaAmount(cleanText, 40) ?? 0;
-  const item41 = extractCasillaAmount(cleanText, 41) ?? 0;
-  let item42 = extractCasillaAmount(cleanText, 42) ?? 0;
-  let item43 = extractCasillaAmount(cleanText, 43) ?? 0;
-  const item442 = extractCasillaAmount(cleanText, 442) ?? extractCasillaAmount(cleanText, 44) ?? 0;
-  const item443 = extractCasillaAmount(cleanText, 443) ?? 0;
-  let item47 = extractCasillaAmount(cleanText, 47) ?? 0;
+  const item40 = extractCasillaAmount(normText, 40) ?? 0;
+  const item41 = extractCasillaAmount(normText, 41) ?? 0;
+  let item42 = extractCasillaAmount(normText, 42) ?? 0;
+  let item43 = extractCasillaAmount(normText, 43) ?? 0;
+  const item442 = extractCasillaAmount(normText, 442) ?? extractCasillaAmount(normText, 44) ?? 0;
+  const item443 = extractCasillaAmount(normText, 443) ?? 0;
+  let item47 = extractCasillaAmount(normText, 47) ?? 0;
 
-  const item30 = extractCasillaAmount(cleanText, 30) ?? 0;
-  const item31 = extractCasillaAmount(cleanText, 31) ?? 0;
-  let item33 = extractCasillaAmount(cleanText, 33) ?? 0;
-  let item34 = extractCasillaAmount(cleanText, 34) ?? 0;
-  const item333 = extractCasillaAmount(cleanText, 333) ?? 0;
-  const item343 = extractCasillaAmount(cleanText, 343) ?? 0;
-  let item35 = extractCasillaAmount(cleanText, 35) ?? 0;
-  const item70 = extractCasillaAmount(cleanText, 70) ?? 0;
-  const item37 = extractCasillaAmount(cleanText, 37) ?? 0;
-  let item71 = extractCasillaAmount(cleanText, 71) ?? 0;
+  const item30 = extractCasillaAmount(normText, 30) ?? 0;
+  const item31 = extractCasillaAmount(normText, 31) ?? 0;
+  let item33 = extractCasillaAmount(normText, 33) ?? 0;
+  let item34 = extractCasillaAmount(normText, 34) ?? 0;
+  const item333 = extractCasillaAmount(normText, 333) ?? 0;
+  const item343 = extractCasillaAmount(normText, 343) ?? 0;
+  let item35 = extractCasillaAmount(normText, 35) ?? 0;
+  const item70 = extractCasillaAmount(normText, 70) ?? 0;
+  const item37 = extractCasillaAmount(normText, 37) ?? 0;
+  let item71 = extractCasillaAmount(normText, 71) ?? 0;
 
-  const item20 = extractCasillaAmount(cleanText, 20) ?? 0;
-  const item38 = extractCasillaAmount(cleanText, 38) ?? 0;
-  const item39 = extractCasillaAmount(cleanText, 39) ?? 0;
-  let item53 = extractCasillaAmount(cleanText, 53) ?? 0;
-  let item60 = extractCasillaAmount(cleanText, 60) ?? 0;
+  const item20 = extractCasillaAmount(normText, 20) ?? 0;
+  const item38 = extractCasillaAmount(normText, 38) ?? 0;
+  const item39 = extractCasillaAmount(normText, 39) ?? 0;
+  let item53 = extractCasillaAmount(normText, 53) ?? 0;
+  let item60 = extractCasillaAmount(normText, 60) ?? 0;
 
-  const item54 = extractCasillaAmount(cleanText, 54) ?? 0;
-  const item66 = extractCasillaAmount(cleanText, 66) ?? 0;
-  const item67 = extractCasillaAmount(cleanText, 67) ?? 0;
-  const item90 = extractCasillaAmount(cleanText, 90) ?? 0;
+  const item54 = extractCasillaAmount(normText, 54) ?? 0;
+  const item66 = extractCasillaAmount(normText, 66) ?? 0;
+  const item67 = extractCasillaAmount(normText, 67) ?? 0;
+  const item90 = extractCasillaAmount(normText, 90) ?? 0;
 
   // Window scanner fallbacks for critical totals if 0
   if (item42 === 0 || item43 === 0) {

@@ -249,6 +249,7 @@ export function detectPeriodFromFilename(fileName: string): {
 }
 
 // Convert Venezuelan number format ("147.909,07" or "147,909.07" or "147909.07" or "1.326.324,15") to float
+// Convert Venezuelan number format ("147.909,07" or "147,909.07" or "147909.07" or "1.326.324,15") to float
 export function parseVenAmount(val: string | number | null | undefined): number {
   if (val === null || val === undefined) return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -256,13 +257,10 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   let str = String(val).trim();
   if (!str) return 0;
 
-  // Detect negative values wrapped in parentheses e.g. (34.439,78)
   const isNegative = str.startsWith("-") || (str.startsWith("(") && str.endsWith(")"));
+  // Strip ONLY currency symbols and surrounding brackets/spaces — NEVER strip dots or commas from numeric figures!
+  str = str.replace(/(?:Bs\.?|VES|\$|\s|\(|\))/gi, "").trim();
 
-  // Remove currency words, parentheses and symbols
-  str = str.replace(/[Bs\.\$VES\s\(\)]/gi, "");
-
-  // If standard Venezuelan formatted number: 1.234.567,89
   if (str.includes(",") && str.includes(".")) {
     if (str.lastIndexOf(",") > str.lastIndexOf(".")) {
       // 1.234,56 -> 1234.56
@@ -280,6 +278,18 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   if (isNaN(num)) return 0;
   const rounded = Math.round(num * 100) / 100;
   return isNegative ? -Math.abs(rounded) : rounded;
+}
+
+// Normalize spacing in extracted PDF text so character position splits don't break regex matching
+export function normalizePdfText(text: string): string {
+  if (!text) return "";
+  let clean = text.replace(/\r\n/g, "\n");
+  clean = clean.replace(/(\d)\s*([\.,])\s*(\d)/g, "$1$2$3");
+  clean = clean.replace(/(\d)\s*([\.,])\s*(\d)/g, "$1$2$3");
+  clean = clean.replace(/\[\s*(\d{1,3})\s*\]/g, "[$1]");
+  clean = clean.replace(/\(\s*(\d{1,3})\s*\)/g, "($1)");
+  clean = clean.replace(/[ \t]+/g, " ");
+  return clean;
 }
 
 // Extract raw text from PDF buffer preserving multi-page contents
@@ -300,20 +310,13 @@ function extractAmountsFromWindow(
   text: string,
   excludedNumbers: number[] = []
 ): number[] {
-  // 1. Remove table row index numbering like "10. ", "15. ", "01. ", "22. " at line starts or word boundaries
   let sanitized = text.replace(/(?:^|\n|\r|\s)\d{1,2}\.\s+/g, " ");
-  // 2. Remove all dates (DD/MM/YYYY, DD-MM-YYYY, etc.)
   sanitized = sanitized.replace(/\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/g, " ");
-  // 3. Remove period ranges (e.g. "01 al 15", "16 al 28", "16 al 31")
   sanitized = sanitized.replace(/\b(?:del|desde)?\s*\d{1,2}\s*(?:al|a|hasta|-)\s*\d{1,2}\b/gi, " ");
-  // 4. Remove percentages (e.g. "16%", "8%", "16 %", "8 %", "100%", "75%")
   sanitized = sanitized.replace(/\b\d+(?:[\.,]\d+)?\s*%/g, " ");
-  // 5. Remove years (2020..2035)
   sanitized = sanitized.replace(/\b20[2-3][0-9]\b/g, " ");
-  // 6. Remove standalone small numbers (1 to 99) without decimals to avoid taking line/row numbers like 10 or 15
   sanitized = sanitized.replace(/\b([0-9]{1,2})\b(?!\s*,\s*\d{2}|\s*\.\s*\d{2})/g, " ");
 
-  // Match ONLY valid Venezuelan currency amounts (must have 2 decimal places: 1.234,56 or 0,00 or 1234,56 or >= 1000)
   const tokenRegex = /(?:\b\d{1,3}(?:\.\d{3})+(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b\d{4,}\b)/g;
   const matches = sanitized.match(tokenRegex) || [];
   const amounts: number[] = [];
@@ -326,20 +329,11 @@ function extractAmountsFromWindow(
 
   for (const m of matches) {
     const parsed = parseVenAmount(m);
-    // Ignore if it's explicitly in the excluded list
-    if (excludedNumbers.includes(parsed)) {
-      continue;
-    }
-    // Ignore bare integers that represent item numbers, row numbers, days, or small constants
-    if (!m.includes(",") && !m.includes(".") && (commonItemCodes.includes(parsed) || parsed < 100)) {
-      continue;
-    }
-    // Ignore stray exact row index numbers 10 and 15
+    if (excludedNumbers.includes(parsed)) continue;
+    if (parsed > 500000000) continue;
+    if (!m.includes(",") && !m.includes(".") && (commonItemCodes.includes(parsed) || parsed < 100)) continue;
     if (parsed === 10 || parsed === 15) {
-      // Only keep if the original text was explicitly written with decimals e.g. "10,00" or "15,00"
-      if (!m.includes(",00") && !m.includes(".00")) {
-        continue;
-      }
+      if (!m.includes(",00") && !m.includes(".00")) continue;
     }
     amounts.push(parsed);
   }
@@ -347,53 +341,65 @@ function extractAmountsFromWindow(
   return amounts;
 }
 
-// Blacklisted form codes & serial numbers that must NEVER be assigned to tax casillas
-const BLACKLISTED_FORM_NUMBERS = [99030, 2600524809];
-
 // Targeted Casilla amount extractor for SENIAT forms
 export function extractCasillaAmount(cleanText: string, casillaCode: number): number | null {
-  const patterns = [
-    // [ 40 ] 2.513.414,61 or [40] | 2.513.414,61 or [40] Bs. 2.513.414,61
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-    // ( 40 ) 2.513.414,61
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-    // Casilla 40: 2.513.414,61 or Renglón 40: 2.513.414,61 or Item 40: 2.513.414,61
-    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-    // 40: 2.513.414,61 (at start of line)
-    new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, "im"),
-    // Restrict cross-matching to same line
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, "i"),
-  ];
+  const normText = normalizePdfText(cleanText);
+  const lines = normText.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
 
-  for (const pattern of patterns) {
-    const match = cleanText.match(pattern);
-    if (match && match[1]) {
-      const rawMatchStr = match[1].trim();
-      const parsed = parseVenAmount(rawMatchStr);
+  const bracketTarget = `[${casillaCode}]`;
+  const parenTarget = `(${casillaCode})`;
 
-      if (parsed === casillaCode) continue;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const hasBracket = line.includes(bracketTarget);
+    const hasParen = line.includes(parenTarget);
+    const hasBareCode = new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)?\\s*\\b${casillaCode}\\b`, "i").test(line);
 
-      // Only filter form codes / serials if the match is a bare integer without decimal separator (no , or .)
-      if (!rawMatchStr.includes(",") && !rawMatchStr.includes(".")) {
-        if (BLACKLISTED_FORM_NUMBERS.includes(parsed) || parsed === 99030 || parsed === 2600524809 || parsed > 500000000) {
-          continue;
+    if (hasBracket || hasParen || hasBareCode) {
+      let codePos = -1;
+      if (hasBracket) codePos = line.indexOf(bracketTarget);
+      else if (hasParen) codePos = line.indexOf(parenTarget);
+      else codePos = line.search(new RegExp(`\\b${casillaCode}\\b`));
+
+      const afterCode = codePos !== -1 ? line.substring(codePos) : line;
+      const moneyMatches = afterCode.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+
+      if (moneyMatches && moneyMatches.length > 0) {
+        const val = parseVenAmount(moneyMatches[0]);
+        if (val !== casillaCode || moneyMatches[0].includes(",") || moneyMatches[0].includes(".")) {
+          return val;
         }
       }
 
-      const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
-      if (isKnownRowIndex && !rawMatchStr.includes(",") && !rawMatchStr.includes(".")) {
-        continue;
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1];
+        const nextMoneyMatches = nextLine.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+        if (nextMoneyMatches && nextMoneyMatches.length > 0) {
+          const val = parseVenAmount(nextMoneyMatches[0]);
+          if (val !== casillaCode || nextMoneyMatches[0].includes(",") || nextMoneyMatches[0].includes(".")) {
+            return val;
+          }
+        }
       }
-      if (casillaCode === 47 && parsed === 10 && !rawMatchStr.includes(",")) continue;
-      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14) && !rawMatchStr.includes(",")) continue;
-      if (casillaCode === 30 && (parsed === 11 || parsed === 10) && !rawMatchStr.includes(",")) continue;
-      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19) && !rawMatchStr.includes(",")) continue;
-      if (casillaCode === 70 && (parsed === 20 || parsed === 17) && !rawMatchStr.includes(",")) continue;
-      if (casillaCode === 71 && (parsed === 22 || parsed === 21) && !rawMatchStr.includes(",")) continue;
-      return parsed;
     }
   }
+
+  const patterns = [
+    new RegExp(`\\[${casillaCode}\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
+    new RegExp(`\\(${casillaCode}\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
+    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
+  ];
+
+  for (const pat of patterns) {
+    const match = normText.match(pat);
+    if (match && match[1]) {
+      const val = parseVenAmount(match[1]);
+      if (val !== casillaCode || match[1].includes(",") || match[1].includes(".")) {
+        return val;
+      }
+    }
+  }
+
   return null;
 }
 
