@@ -249,7 +249,7 @@ export function detectPeriodFromFilename(fileName: string): {
 }
 
 // Convert Venezuelan number format ("147.909,07" or "147,909.07" or "147909.07" or "1.326.324,15") to float
-// Convert Venezuelan number format ("147.909,07" or "147,909.07" or "147909.07" or "1.326.324,15") to float
+// Convert Venezuelan number format ("147.909,07" or "147,909.07" or "2.479.904" or "1.326.324,15") to float
 export function parseVenAmount(val: string | number | null | undefined): number {
   if (val === null || val === undefined) return 0;
   if (typeof val === "number") return isNaN(val) ? 0 : val;
@@ -263,15 +263,30 @@ export function parseVenAmount(val: string | number | null | undefined): number 
 
   if (str.includes(",") && str.includes(".")) {
     if (str.lastIndexOf(",") > str.lastIndexOf(".")) {
-      // 1.234,56 -> 1234.56
+      // 1.234.567,89 -> 1234567.89
       str = str.replace(/\./g, "").replace(",", ".");
     } else {
-      // 1,234.56 -> 1234.56
+      // 1,234,567.89 -> 1234567.89
       str = str.replace(/,/g, "");
     }
   } else if (str.includes(",")) {
-    // 1234,56 -> 1234.56
-    str = str.replace(",", ".");
+    const commaCount = (str.match(/,/g) || []).length;
+    if (commaCount > 1) {
+      str = str.replace(/,/g, "");
+    } else {
+      str = str.replace(",", ".");
+    }
+  } else if (str.includes(".")) {
+    const dotCount = (str.match(/\./g) || []).length;
+    if (dotCount > 1) {
+      // Multiple dots: e.g. 2.479.904 -> 2479904
+      str = str.replace(/\./g, "");
+    } else {
+      // Single dot: e.g. "451.360" or "2.479" vs "123.45" or "0.00"
+      if (/\.\d{3}$/.test(str)) {
+        str = str.replace(/\./g, "");
+      }
+    }
   }
 
   const num = parseFloat(str);
@@ -317,7 +332,7 @@ function extractAmountsFromWindow(
   sanitized = sanitized.replace(/\b20[2-3][0-9]\b/g, " ");
   sanitized = sanitized.replace(/\b([0-9]{1,2})\b(?!\s*,\s*\d{2}|\s*\.\s*\d{2})/g, " ");
 
-  const tokenRegex = /(?:\b\d{1,3}(?:\.\d{3})+(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b\d{4,}\b)/g;
+  const tokenRegex = /(?:\b\d{1,3}(?:\.\d{3})+(?:,\d{2})?\b|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})?\b|\b\d+[,\.]\d{1,2}\b|\b\d{4,}\b)/g;
   const matches = sanitized.match(tokenRegex) || [];
   const amounts: number[] = [];
 
@@ -357,27 +372,40 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
 
     if (hasBracket || hasParen || hasBareCode) {
       let codePos = -1;
-      if (hasBracket) codePos = line.indexOf(bracketTarget);
-      else if (hasParen) codePos = line.indexOf(parenTarget);
-      else codePos = line.search(new RegExp(`\\b${casillaCode}\\b`));
+      let cutOffset = 0;
+      if (hasBracket) {
+        codePos = line.indexOf(bracketTarget);
+        cutOffset = bracketTarget.length;
+      } else if (hasParen) {
+        codePos = line.indexOf(parenTarget);
+        cutOffset = parenTarget.length;
+      } else {
+        codePos = line.search(new RegExp(`\\b${casillaCode}\\b`));
+        cutOffset = String(casillaCode).length;
+      }
 
-      const afterCode = codePos !== -1 ? line.substring(codePos) : line;
-      const moneyMatches = afterCode.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+      const afterCode = codePos !== -1 ? line.substring(codePos + cutOffset) : line;
+      // Match Venezuelan monetary numbers with or without decimals: 2.479.904,00 or 2.479.904 or 451.360,44 or 451.360 or 0,00 or 0
+      const moneyMatches = afterCode.match(/(?:\b\d{1,3}(?:\.\d{3})+(?:,\d{2})?\b|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})?\b|\b\d+[,\.]\d{1,2}\b|\b0(?:[,\.]00)?\b|\b\d+\b)/g);
 
       if (moneyMatches && moneyMatches.length > 0) {
-        const val = parseVenAmount(moneyMatches[0]);
-        if (val !== casillaCode || moneyMatches[0].includes(",") || moneyMatches[0].includes(".")) {
-          return val;
+        for (const m of moneyMatches) {
+          const val = parseVenAmount(m);
+          if (val !== casillaCode || m.includes(",") || m.includes(".")) {
+            return val;
+          }
         }
       }
 
       if (i + 1 < lines.length) {
         const nextLine = lines[i + 1];
-        const nextMoneyMatches = nextLine.match(/(?:\b\d{1,3}(?:\.\d{3})*(?:,\d{2})\b|\b\d{1,3}(?:,\d{3})*(?:\.\d{2})\b|\b\d+[,\.]\d{2}\b|\b0(?:[,\.]00)?\b)/g);
+        const nextMoneyMatches = nextLine.match(/(?:\b\d{1,3}(?:\.\d{3})+(?:,\d{2})?\b|\b\d{1,3}(?:,\d{3})+(?:\.\d{2})?\b|\b\d+[,\.]\d{1,2}\b|\b0(?:[,\.]00)?\b|\b\d+\b)/g);
         if (nextMoneyMatches && nextMoneyMatches.length > 0) {
-          const val = parseVenAmount(nextMoneyMatches[0]);
-          if (val !== casillaCode || nextMoneyMatches[0].includes(",") || nextMoneyMatches[0].includes(".")) {
-            return val;
+          for (const m of nextMoneyMatches) {
+            const val = parseVenAmount(m);
+            if (val !== casillaCode || m.includes(",") || m.includes(".")) {
+              return val;
+            }
           }
         }
       }
@@ -385,9 +413,9 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
   }
 
   const patterns = [
-    new RegExp(`\\[${casillaCode}\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
-    new RegExp(`\\(${casillaCode}\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
-    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*[\\.,]\\d{2}|0(?:[\\.,]00)?|\\d+)`, "i"),
+    new RegExp(`\\[${casillaCode}\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*(?:[\\.,]\\d{1,2})?|0(?:[\\.,]00)?|\\d+)`, "i"),
+    new RegExp(`\\(${casillaCode}\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*(?:[\\.,]\\d{1,2})?|0(?:[\\.,]00)?|\\d+)`, "i"),
+    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)?\\s*\\b${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?)?[\\s:;\\|\\.\\-_]*([\\d]{1,3}(?:[\\.\\,]\\d{3})*(?:[\\.,]\\d{1,2})?|0(?:[\\.,]00)?|\\d+)`, "i"),
   ];
 
   for (const pat of patterns) {
@@ -559,7 +587,7 @@ export function parseSeniatText(rawText: string, fileName: string): Partial<Extr
   let casilla40 = extractCasillaAmount(cleanText, 40);
   if (casilla40 === null) {
     // Dedicated search for Renglón 1 / Ventas no gravadas y/o sin derecho a crédito fiscal
-    const m40 = cleanText.match(/(?:(?:1[\.\)\-]?\s*)?Ventas\s+(?:internas\s+)?no\s+gravadas(?:\s+y\s*\/\s*o\s+sin\s+derecho\s+a\s+cr[eé]dito(?:\s+fiscal)?)?|sin\s+derecho\s+a\s+cr[eé]dito\s+fiscal|Ventas\s+no\s+sujetas|Ventas\s+exentas)[\s\S]{0,100}?(?:\[\s*40\s*\]|\(\s*40\s*\)|\b40\b)?[\s:\|\.\-_]*(?:Bs\.?|VES)?[\s:\|\.\-_]*([1-9]\d{0,2}(?:\.\d{3})*,\d{2}|0,\d{2}|\d+,\d{2}|0\b)(?![\\.\\)\\-]\\s*[a-zA-Z])/i);
+    const m40 = cleanText.match(/(?:(?:1[\.\)\-]?\s*)?Ventas\s+(?:internas\s+)?no\s+gravadas(?:\s+y\s*\/\s*o\s+sin\s+derecho\s+a\s+cr[eé]dito(?:\s+fiscal)?)?|sin\s+derecho\s+a\s+cr[eé]dito\s+fiscal|Ventas\s+no\s+sujetas|Ventas\s+exentas)[\s\S]{0,100}?(?:\[\s*40\s*\]|\(\s*40\s*\)|\b40\b)?[\s:\|\.\-_]*(?:Bs\.?|VES)?[\s:\|\.\-_]*([1-9]\d{0,2}(?:\.\d{3})*(?:,\d{2})?|0[,\.]\d{2}|\d+[,\.]\d{2}|\d+)(?![\\.\\)\\-]\\s*[a-zA-Z])/i);
     if (m40 && m40[1]) {
       const parsed40 = parseVenAmount(m40[1]);
       if (parsed40 !== 40 && parsed40 !== 1) {
