@@ -47,6 +47,29 @@ import {
 const STORAGE_ACTIVE_KEY = 'seniat_iva_active_company_id_v2';
 const STORAGE_LEGACY_KEY = 'seniat_iva_company_v2';
 
+// Helper function to guarantee company list has 100% unique IDs across React renders
+function deduplicateCompanies(comps: CompanyProfile[]): CompanyProfile[] {
+  const seenIds = new Set<string>();
+  const result: CompanyProfile[] = [];
+
+  for (const comp of comps) {
+    if (!comp) continue;
+    let safeId = comp.id || `company-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+
+    if (seenIds.has(safeId)) {
+      safeId = `${safeId}-${Math.random().toString(36).substring(2, 6)}`;
+    }
+
+    seenIds.add(safeId);
+    result.push({
+      ...comp,
+      id: safeId,
+    });
+  }
+
+  return result;
+}
+
 export default function App() {
   // Multi-Company State
   const [companies, setCompanies] = useState<CompanyProfile[]>([]);
@@ -233,7 +256,6 @@ export default function App() {
 
         if (pvIdx >= 0) {
           const existing = loadedList[pvIdx];
-          // Ensure no simulator/demo data in Punto Verde
           if (hasDemoOrSimulatorData(existing.periodData)) {
             loadedList[pvIdx] = {
               ...existing,
@@ -243,13 +265,12 @@ export default function App() {
           }
           pvIdToActivate = existing.id;
         } else {
-          // Create pristine clean format for PANIFICADORA Y TEQUEÑERIA TU PUNTO VERDE, C.A.
           const cleanPuntoVerde: CompanyProfile = {
             id: PUNTO_VERDE_ID,
             razonSocial: PUNTO_VERDE_NAME,
             rif: PUNTO_VERDE_RIF,
             fiscalYear: 2025,
-            periodData: createInitialYearDataset(2025), // 100% clean zeros across all 24 periods
+            periodData: createInitialYearDataset(2025),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
@@ -270,13 +291,15 @@ export default function App() {
           });
         }
 
+        const dedupedList = deduplicateCompanies(loadedList);
+
         // Sync all loaded/created companies to Firestore and IndexedDB
-        for (const c of loadedList) {
+        for (const c of dedupedList) {
           await saveCompanyToFirestore(c).catch((e) => console.warn('Firestore sync error:', e));
           await saveCompanyToDB(c).catch((e) => console.warn('IndexedDB sync error:', e));
         }
 
-        setCompanies(loadedList);
+        setCompanies(dedupedList);
         setIsCloudSynced(true);
 
         // Prioritize PANIFICADORA Y TEQUEÑERIA TU PUNTO VERDE, C.A. as active company
@@ -301,7 +324,6 @@ export default function App() {
 
           const yearBase = createInitialYearDataset(comp.fiscalYear || 2025);
 
-          // Guarantee Punto Verde never has simulator / demo values
           if (isPuntoVerde && hasDemoOrSimulatorData(comp.periodData)) {
             return {
               ...comp,
@@ -321,7 +343,9 @@ export default function App() {
             periodData: { ...yearBase, ...sanitizedPeriods },
           };
         });
-        setCompanies(sanitizedList);
+
+        const dedupedCloudList = deduplicateCompanies(sanitizedList);
+        setCompanies(dedupedCloudList);
         setIsCloudSynced(true);
       }
     });
