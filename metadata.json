@@ -1,0 +1,6 @@
+{
+  "name": "Resumen de Planillas de IVA Venezuela",
+  "description": "Extractor automático y generador de resumen anual de planillas de IVA (SENIAT Forma 30) para empresas en Venezuela a partir de archivos PDF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "CompanyProfile": {
+      "title": "Company Profile",
+      "description": "Represents a tax-registered company profile in Venezuela with its annual 24-quincena Forma 30 IVA data.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique identifier for the company profile"
+        },
+        "razonSocial": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Official company name / Razón Social"
+        },
+        "rif": {
+          "type": "string",
+          "maxLength": 50,
+          "description": "Tax Identification Number (RIF - Registro de Información Fiscal)"
+        },
+        "fiscalYear": {
+          "type": "integer",
+          "description": "Fiscal year (e.g., 2025)"
+        },
+        "periodData": {
+          "type": "object",
+          "description": "Dictionary of quincena tax period records indexed by period key (e.g. 2025-01-1)"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp when company was created"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp when company was last updated"
+        }
+      },
+      "required": ["id", "razonSocial", "rif", "fiscalYear", "periodData"]
+    }
+  },
+  "firestore": {
+    "/companies/{companyId}": {
+      "schema": {
+        "$ref": "#/entities/CompanyProfile"
+      },
+      "description": "Collection storing all Venezuelan company tax profiles and their annual 24-quincena IVA summaries."
+    }
+  }
+}

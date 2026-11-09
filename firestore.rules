@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidCompanyProfile(data) {
+      return data.keys().hasAll(['id', 'razonSocial', 'rif', 'fiscalYear', 'periodData']) &&
+             data.id is string && data.id.size() <= 128 &&
+             data.razonSocial is string && data.razonSocial.size() <= 300 &&
+             data.rif is string && data.rif.size() <= 50 &&
+             data.fiscalYear is int && data.fiscalYear >= 1900 && data.fiscalYear <= 2100 &&
+             data.periodData is map;
+    }
+
+    // Companies Collection
+    match /companies/{companyId} {
+      allow read: if isValidId(companyId);
+      allow list: if true;
+      allow create: if isValidId(companyId) && isValidCompanyProfile(incoming());
+      allow update: if isValidId(companyId) && isValidCompanyProfile(incoming());
+      allow delete: if isValidId(companyId);
+    }
+
+    // Default deny for all other paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
