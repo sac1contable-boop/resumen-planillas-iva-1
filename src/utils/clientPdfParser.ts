@@ -45,19 +45,16 @@ export function parseVenAmount(val: string | number | null | undefined): number 
   return isNegative ? -Math.abs(rounded) : rounded;
 }
 
-// Blacklisted form codes & serial numbers that must NEVER be assigned to tax casillas
-const BLACKLISTED_FORM_NUMBERS = [99030, 2600524809];
-
 // Targeted Casilla amount extractor for SENIAT forms
 export function extractCasillaAmount(cleanText: string, casillaCode: number): number | null {
   const patterns = [
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'im'),
+    new RegExp(`\\[\\s*${casillaCode}\\s*\\][\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`(?:casilla|rengl[oó]n|c[oó]digo|item)\\s*${casillaCode}\\b[\\s:;\\|\\.\\-_]*(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`(?:^|[\\r\\n])[\\s\\|]*${casillaCode}[\\s:;\\|\\.\\-_]+(?:Bs\\.?[\\s:;\\|\\.\\-_]*)?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'im'),
     // Restrict cross-matching to the same line to avoid grabbing numbers from headers
-    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
-    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,60}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2})(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`\\[\\s*${casillaCode}\\s*\\][^\\r\\n]{0,80}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
+    new RegExp(`\\(\\s*${casillaCode}\\s*\\)[^\\r\\n]{0,80}?([\\d]{1,3}(?:\\.[\\d]{3})*,\\d{2}|[\\d]{1,3}(?:,\\d{3})*\\.\\d{2}|\\d+[,\\.]\\d{2}|0(?:[,\\.]00)?\\b)(?![\\.\\)\\-]\\s*[a-zA-Z])`, 'i'),
   ];
 
   for (const pattern of patterns) {
@@ -67,20 +64,25 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
       const parsed = parseVenAmount(rawMatchStr);
 
       if (parsed === casillaCode) continue;
-      if (BLACKLISTED_FORM_NUMBERS.includes(parsed)) continue;
-      if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
+
+      // Only filter form codes / serials if the match is a bare integer without decimal separator (no , or .)
+      if (!rawMatchStr.includes(',') && !rawMatchStr.includes('.')) {
+        if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) {
+          continue;
+        }
+      }
 
       const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
       if (isKnownRowIndex && !rawMatchStr.includes(',') && !rawMatchStr.includes('.')) {
         continue;
       }
-      if (casillaCode === 47 && (parsed === 10 || parsed === 99030)) continue;
-      if (casillaCode === 42 && (parsed === 99030)) continue;
-      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14)) continue;
-      if (casillaCode === 30 && (parsed === 11 || parsed === 10)) continue;
-      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19)) continue;
-      if (casillaCode === 70 && (parsed === 20 || parsed === 17)) continue;
-      if (casillaCode === 71 && (parsed === 22 || parsed === 21)) continue;
+
+      if (casillaCode === 47 && parsed === 10 && !rawMatchStr.includes(',')) continue;
+      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14) && !rawMatchStr.includes(',')) continue;
+      if (casillaCode === 30 && (parsed === 11 || parsed === 10) && !rawMatchStr.includes(',')) continue;
+      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19) && !rawMatchStr.includes(',')) continue;
+      if (casillaCode === 70 && (parsed === 20 || parsed === 17) && !rawMatchStr.includes(',')) continue;
+      if (casillaCode === 71 && (parsed === 22 || parsed === 21) && !rawMatchStr.includes(',')) continue;
       return parsed;
     }
   }
@@ -379,9 +381,8 @@ export function parseSeniatForma30(
     }
   }
 
-  // Anti-contamination sanitizer: zero out any values matching form numbers or serial numbers
+  // Anti-contamination sanitizer: zero out any values that accidentally captured the casilla item code itself
   const sanitizeValue = (val: number, itemCode: number): number => {
-    if (val === 99030 || val === 2600524809 || val > 500000000) return 0;
     if (val === itemCode) return 0;
     return val;
   };

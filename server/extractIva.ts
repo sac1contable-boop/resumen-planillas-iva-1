@@ -373,20 +373,24 @@ export function extractCasillaAmount(cleanText: string, casillaCode: number): nu
       const parsed = parseVenAmount(rawMatchStr);
 
       if (parsed === casillaCode) continue;
-      if (BLACKLISTED_FORM_NUMBERS.includes(parsed)) continue;
-      if (parsed === 99030 || parsed === 2600524809 || parsed > 500000000) continue;
+
+      // Only filter form codes / serials if the match is a bare integer without decimal separator (no , or .)
+      if (!rawMatchStr.includes(",") && !rawMatchStr.includes(".")) {
+        if (BLACKLISTED_FORM_NUMBERS.includes(parsed) || parsed === 99030 || parsed === 2600524809 || parsed > 500000000) {
+          continue;
+        }
+      }
 
       const isKnownRowIndex = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 29, 30, 31, 32].includes(parsed);
       if (isKnownRowIndex && !rawMatchStr.includes(",") && !rawMatchStr.includes(".")) {
         continue;
       }
-      if (casillaCode === 47 && (parsed === 10 || parsed === 99030)) continue;
-      if (casillaCode === 42 && (parsed === 99030)) continue;
-      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14)) continue;
-      if (casillaCode === 30 && (parsed === 11 || parsed === 10)) continue;
-      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19)) continue;
-      if (casillaCode === 70 && (parsed === 20 || parsed === 17)) continue;
-      if (casillaCode === 71 && (parsed === 22 || parsed === 21)) continue;
+      if (casillaCode === 47 && parsed === 10 && !rawMatchStr.includes(",")) continue;
+      if (casillaCode === 33 && (parsed === 15 || parsed === 16 || parsed === 14) && !rawMatchStr.includes(",")) continue;
+      if (casillaCode === 30 && (parsed === 11 || parsed === 10) && !rawMatchStr.includes(",")) continue;
+      if (casillaCode === 35 && (parsed === 18 || parsed === 15 || parsed === 19) && !rawMatchStr.includes(",")) continue;
+      if (casillaCode === 70 && (parsed === 20 || parsed === 17) && !rawMatchStr.includes(",")) continue;
+      if (casillaCode === 71 && (parsed === 22 || parsed === 21) && !rawMatchStr.includes(",")) continue;
       return parsed;
     }
   }
@@ -738,7 +742,7 @@ export function parseSeniatText(rawText: string, fileName: string): Partial<Extr
 function sanitizeItemCodeContamination(data: Partial<ExtractedIvaData>): void {
   const checkAndClean = (key: keyof ExtractedIvaData, excluded: number[]) => {
     const val = Number(data[key]);
-    if (excluded.includes(val) || val === 99030 || val === 2600524809 || val > 500000000) {
+    if (excluded.includes(val) || val > 500000000) {
       (data as any)[key] = 0;
     }
   };
